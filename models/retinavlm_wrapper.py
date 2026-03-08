@@ -27,6 +27,10 @@ class RetinaVLM(PreTrainedModel):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = MiniGPT4Module(config, device=device).model.eval()
 
+    @property
+    def all_tied_weights_keys(self):
+        return {}
+
     def convert_any_image_to_normalized_tensor(self, image_input):
         # Convert input to numpy array if it's a PIL Image
         if isinstance(image_input, Image.Image):
@@ -67,10 +71,15 @@ class RetinaVLM(PreTrainedModel):
 
     def forward(self, images, queries, max_new_tokens=750):
         answer_preambles = [''] * len(images)
-        if len(images.shape) == 2:
+        if isinstance(images, torch.Tensor) and len(images.shape) == 2:
             images = [images]
+        
+        # Get the dtype of the model to match input
+        model_dtype = next(self.model.parameters()).dtype
+        
         images = [self.convert_any_image_to_normalized_tensor(image) for image in images]
-        images = torch.stack(images, dim=0).to(self.model.device)
+        images = torch.stack(images, dim=0).to(device=self.model.device, dtype=model_dtype)
+        
         outputs, samples = self.model.query(images, queries, answer_preamble=answer_preambles, max_new_tokens=max_new_tokens, output_only=True, return_samples=True)
         return outputs
 
@@ -78,7 +87,7 @@ def load_retinavlm(config):
     rvlm_config = RetinaVLMConfig.from_pretrained("saved_models/RetinaVLM-Specialist")
     rvlm_config.update(config)
     rvlm_config.model.checkpoint_path = None
-    model = RetinaVLM.from_pretrained("saved_models/RetinaVLM-Specialist", config=rvlm_config).eval()
+    model = RetinaVLM.from_pretrained("saved_models/RetinaVLM-Specialist", config=rvlm_config, low_cpu_mem_usage=False, _fast_init=False).eval()
     return model
 
 # def load_retinavlm_specialist_from_hf(config):
@@ -89,12 +98,47 @@ def load_retinavlm(config):
 #     return model
 
 def load_retinavlm_specialist_from_hf(config):
-    rvlm_config = RetinaVLMConfig.from_pretrained("RobbieHolland/RetinaVLM", subfolder="RetinaVLM-Specialist")
+    from huggingface_hub import hf_hub_download
+    import torch
 
+    # 1. 설정 로드
+    rvlm_config = RetinaVLMConfig.from_pretrained("RobbieHolland/RetinaVLM", subfolder="RetinaVLM-Specialist")
     rvlm_config.update(config)
     rvlm_config.model.checkpoint_path = None
-    model = RetinaVLM.from_pretrained("RobbieHolland/RetinaVLM", subfolder="RetinaVLM-Specialist", config=rvlm_config).eval()
+
+    # 2. 모델 인스턴스 직접 생성
+    model = RetinaVLM(rvlm_config)
+
+    # 3. 가중치 파일 다운로드 및 로드
+    print("Downloading weights from HuggingFace...")
+    repo_id = "RobbieHolland/RetinaVLM"
+    
+    # 가중치 파일 후보들 (서버 경로이므로 반드시 '/' 사용)
+    filenames = ["RetinaVLM-Specialist/pytorch_model.bin", "RetinaVLM-Specialist/model.safetensors"]
+    
+    archive_file = None
+    for filename in filenames:
+        try:
+            archive_file = hf_hub_download(repo_id=repo_id, filename=filename, cache_dir=config.pretrained_model_dir)
+            break
+        except Exception:
+            continue
+            
+    if archive_file is None:
+        raise OSError(f"Could not find weights in {repo_id} for {filenames}")
+
+    print(f"Loading weights from {archive_file}...")
+    if archive_file.endswith(".safetensors"):
+        from safetensors.torch import load_file
+        state_dict = load_file(archive_file, device="cpu")
+    else:
+        state_dict = torch.load(archive_file, map_location="cpu")
+
+    # 가중치 주입
+    model.load_state_dict(state_dict, strict=False)
+
     return model
+
 
 @hydra.main(version_base=None, config_path="../configs", config_name="default")
 def debug(config):

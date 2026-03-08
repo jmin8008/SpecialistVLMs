@@ -1,11 +1,12 @@
 import pytorch_lightning as pl
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, BitsAndBytesConfig
 import torch
 import transformers
 import hydra
 import warnings
 from models.util import set_llama3_pad_token
 import warnings
+import sys
 
 from transformers import StoppingCriteria, StoppingCriteriaList
 
@@ -30,12 +31,26 @@ class Llama3(pl.LightningModule):
 
         self.tokenizer = self.create_tokenizer()
 
+        try:
+            # Force default device to 'cpu' to avoid 'meta' device context issues during nested from_pretrained calls
+            if hasattr(torch, 'set_default_device'):
+                torch.set_default_device('cpu')
+            print("DEFAULT DEVICE:", torch.get_default_device())
+            print("IS ACCELERATE ENV?", "accelerate" in sys.modules)
+        except Exception as e:
+            print("DEVICE PRINT ERROR:", e)
+
         if self.config.model.language_model.initialize:
+            quantization_config = None
+            if getattr(config.model.language_model, 'load_in_8bit', False):
+                quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+
+            # Now that we're outside the parent's meta context, we can load normally
             self.model = AutoModelForCausalLM.from_pretrained(
                 config.model.language_model.model_id,
                 torch_dtype=torch.float16,
-                load_in_8bit=config.model.language_model.load_in_8bit,
-                # device_map={'': device_8bit},
+                quantization_config=quantization_config,
+                low_cpu_mem_usage=False,
                 cache_dir=config.pretrained_model_dir,
             )
         else:

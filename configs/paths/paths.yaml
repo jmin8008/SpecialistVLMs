@@ -1,0 +1,40 @@
+defaults:
+  - _self_
+
+retina_metadata_dir: "C:/Users/jjmin/SpecialistVLMs/dataset/metadata"
+retina_referral_metadata_dir: "C:/Users/jjmin/SpecialistVLMs/dataset/referral_metadata"
+
+retina_halfmedian_image_dir: "C:/Users/jjmin/SpecialistVLMs/dataset/images/halfmedian"
+retina_median_image_dir: "C:/Users/jjmin/SpecialistVLMs/dataset/images/median"
+
+retina_referral_halfmedian_image_dir: "C:/Users/jjmin/SpecialistVLMs/dataset/referral_images/halfmedian"
+retina_referral_median_image_dir: "C:/Users/jjmin/SpecialistVLMs/dataset/referral_images/median"
+
+images_for_figures_dir: "C:/Users/jjmin/SpecialistVLMs/dataset/processed_images"
+
+openai_api_key: null
+
+pretrained_model_dir: "C:/Users/jjmin/SpecialistVLMs/saved_models"
+flamingo_repo_dir: null
+llava_med_repo_dir: null
+llava_med_model_path: null
+retfound_repo_dir: null
+flamingo_llama_path: null
+octlatent_repo_dir: null
+
+llama3_path: null
+wizardlm_path: null
+vision_encoder_halfmedian_checkpoint: null
+vision_encoder_5layer_checkpoint: null
+vision_encoder_median_checkpoint: null
+
+specialist_reports: null
+tabular_variables: null
+tabular_biomarker_variables: null
+
+qa_output_dir: "C:/Users/jjmin/SpecialistVLMs/outputs"
+
+senior_ophthalmologist_evaluations: null
+manual_predictions_path: null
+
+hf_write_token: null

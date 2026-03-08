@@ -125,7 +125,12 @@ class MiniGPT4(nn.Module):
             return self.tokenizers[self.llm.device.index]
 
     def maybe_to(self, module, device):
-        module = module.to(device) if device else module
+        if device:
+            # If the module is on the meta device, do not attempt to move it. 
+            # transformers.PreTrainedModel.from_pretrained handles weight loading later.
+            is_meta = any(p.device.type == 'meta' for p in module.parameters())
+            if not is_meta:
+                module = module.to(device)
         torch.cuda.empty_cache()
         return module
 
