@@ -20,9 +20,7 @@ class RetinaVLM(PreTrainedModel):
     config_class = RetinaVLMConfig
 
     def __init__(self, config):
-        hf_config = RetinaVLMConfig()
-        print(hf_config)
-        super().__init__(hf_config)
+        super().__init__(config)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = MiniGPT4Module(config, device=device).model.eval()
@@ -98,7 +96,6 @@ def load_retinavlm(config):
 #     return model
 
 def load_retinavlm_specialist_from_hf(config):
-    from huggingface_hub import hf_hub_download
     import torch
 
     # 1. 설정 로드
@@ -106,36 +103,16 @@ def load_retinavlm_specialist_from_hf(config):
     rvlm_config.update(config)
     rvlm_config.model.checkpoint_path = None
 
-    # 2. 모델 인스턴스 직접 생성
-    model = RetinaVLM(rvlm_config)
-
-    # 3. 가중치 파일 다운로드 및 로드
-    print("Downloading weights from HuggingFace...")
+    # 2. 모델 로드 (HuggingFace에서 가중치 자동 다운로드 및 sharded weight 처리)
+    print("Loading weights from HuggingFace...")
     repo_id = "RobbieHolland/RetinaVLM"
     
-    # 가중치 파일 후보들 (서버 경로이므로 반드시 '/' 사용)
-    filenames = ["RetinaVLM-Specialist/pytorch_model.bin", "RetinaVLM-Specialist/model.safetensors"]
-    
-    archive_file = None
-    for filename in filenames:
-        try:
-            archive_file = hf_hub_download(repo_id=repo_id, filename=filename, cache_dir=config.pretrained_model_dir)
-            break
-        except Exception:
-            continue
-            
-    if archive_file is None:
-        raise OSError(f"Could not find weights in {repo_id} for {filenames}")
-
-    print(f"Loading weights from {archive_file}...")
-    if archive_file.endswith(".safetensors"):
-        from safetensors.torch import load_file
-        state_dict = load_file(archive_file, device="cpu")
-    else:
-        state_dict = torch.load(archive_file, map_location="cpu")
-
-    # 가중치 주입
-    model.load_state_dict(state_dict, strict=False)
+    model = RetinaVLM.from_pretrained(
+        repo_id,
+        subfolder="RetinaVLM-Specialist",
+        config=rvlm_config,
+        cache_dir=config.pretrained_model_dir
+    ).eval()
 
     return model
 
