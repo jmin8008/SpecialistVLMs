@@ -19,18 +19,20 @@
 
 ---
 
-## 2. 메타 장치 충돌 오류 (RuntimeError)
+## 2. 메타 장치 충돌 및 중첩 로딩 오류 (RuntimeError & NotImplementedError)
 
 ### [현상]
-Llama3 모델 로딩 중 `RuntimeError: You are using from_pretrained with a meta device context manager...` 발생.
+Llama3 모델 로딩 중 `RuntimeError` 발생 후, 수정을 거쳐도 `NotImplementedError: Cannot copy out of meta tensor; no data!` 발생.
 
 ### [원인]
-1. **중첩된 로딩 구조**: `RetinaVLM` -> `MiniGPT4` -> `Llama3` 순으로 모델을 불러오는 과정에서 `transformers` 라이브러리가 내부적으로 "설계도(Meta Device)" 모드를 활성화함.
-2. **데이터 충돌**: 가짜 장치(Meta Device) 상태인 '설계도' 위에 실제 가중치(실제 벽돌)를 쌓으려고 시도하면서 발생한 충돌.
+1. **중첩된 로딩 구조**: 상위 모델인 `RetinaVLM.from_pretrained`가 실행될 때 `transformers` 라이브러리가 전체 모델 구조 파악을 위해 내부적으로 "가짜 장치(Meta Device)" 컨텍스트를 활성화함.
+2. **컨텍스트 전이**: 이 가짜 장치 상태가 자식 모델인 `Llama3`에게도 강제로 적용되어, 진짜 가중치 데이터를 복사하려고 할 때 "가짜 공간에는 실제 데이터를 담을 수 없다"며 충돌 발생.
+3. **권한 오류 (WinError 32)**: 다운로드 도중 프로세스 충돌로 인해 파일이 잠겨 `PermissionError` 발생.
 
-### [해결 방법]
-- **장치 강제 초기화**: `models/llama3.py`에서 Llama3 모델을 불러오기 직전에 `torch.set_default_device('cpu')`를 호출함.
-- **효과**: 가짜 설계도(Meta) 상태를 해제하고, 실제 데이터를 담을 수 있는 공간(CPU RAM)을 확보한 뒤 가중치를 안전하게 로드함.
+### [최종 해결 방법]
+1. **부모 모델의 로딩 방식 변경**: `RetinaVLM.from_pretrained`를 사용하는 대신, 모델 인스턴스를 직접 생성하고 가중치(`pytorch_model.bin`)를 수동으로 로드하도록 `models/retinavlm_wrapper.py` 수정.
+2. **컨텍스트 차단**: 이 방식을 통해 `transformers`가 자동으로 생성하는 `meta` 장치 컨텍스트의 생성을 원천 봉쇄함.
+3. **찌꺼기 파일 제거**: 다운로드 실패 시 생성된 `.incomplete` 및 `.lock` 파일을 수동으로 삭제하여 파일 접근 권한 문제 해결.
 
 ---
 
@@ -43,8 +45,9 @@ Llama3 모델 로딩 중 `RuntimeError: You are using from_pretrained with a met
 ---
 
 ## 4. 최종 상태
-- 모든 설정 참조 정상 작동 확인.
-- 모델 가중치 로딩 충돌 해결.
+- 모든 설정 참조 및 로컬 경로 정상 작동 확인.
+- `meta` 장치 충돌 문제를 `from_pretrained` 우회 로직으로 완벽히 해결.
+- 수동 가중치 로드 방식을 통해 안정적인 모델 합체 완료.
 - 최종적으로 `model.to(DEVICE)`를 통해 GPU(CUDA) 활용 가능 상태 확인.
 
 **작성일**: 2026년 3월 8일
