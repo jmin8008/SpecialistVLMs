@@ -14,7 +14,7 @@ images_for_figures_dir: "C:/Users/jjmin/SpecialistVLMs/dataset/processed_images"
 
 openai_api_key: null
 
-pretrained_model_dir: "C:/Users/jjmin/SpecialistVLMs/saved_models"
+pretrained_model_dir: "/home/ubuntu/bionexus/jgy/.cache/huggingface/hub"
 flamingo_repo_dir: null
 llava_med_repo_dir: null
 llava_med_model_path: null

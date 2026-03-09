@@ -31,33 +31,25 @@ class Llama3(pl.LightningModule):
 
         self.tokenizer = self.create_tokenizer()
 
-        try:
-            # Force default device to 'cpu' to avoid 'meta' device context issues during nested from_pretrained calls
-            if hasattr(torch, 'set_default_device'):
-                torch.set_default_device('cpu')
-            print("DEFAULT DEVICE:", torch.get_default_device())
-            print("IS ACCELERATE ENV?", "accelerate" in sys.modules)
-        except Exception as e:
-            print("DEVICE PRINT ERROR:", e)
-
         if self.config.model.language_model.initialize:
             quantization_config = None
             if getattr(config.model.language_model, 'load_in_8bit', False):
                 quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
-            # Now that we're outside the parent's meta context, we can load normally
             self.model = AutoModelForCausalLM.from_pretrained(
                 config.model.language_model.model_id,
                 torch_dtype=torch.float16,
                 quantization_config=quantization_config,
                 low_cpu_mem_usage=False,
                 cache_dir=config.pretrained_model_dir,
+                local_files_only=True,
             )
         else:
             warnings.warn('Loading 8-bit quantized models from HuggingFace can lead to errors when loading LLama3 from_config instead of from_pretrained.')
             config_model = AutoConfig.from_pretrained(
                 config.model.language_model.model_id,  # Model ID for config
                 cache_dir=config.pretrained_model_dir,
+                local_files_only=True,
             )
             self.model = AutoModelForCausalLM.from_config(
                 config_model,
@@ -68,7 +60,7 @@ class Llama3(pl.LightningModule):
         self.stop_words_ids = [torch.Tensor(self.tokenizer.encode(self.tokenizer.eos_token, add_special_tokens=False)).to(self.model.device), torch.Tensor(self.tokenizer.encode("<|eot_id|>", add_special_tokens=False)).to(self.model.device)]
 
     def create_tokenizer(self):
-        tokenizer = AutoTokenizer.from_pretrained(self.config.model.language_model.model_id, cache_dir=self.config.pretrained_model_dir, use_fast=False)
+        tokenizer = AutoTokenizer.from_pretrained(self.config.model.language_model.model_id, cache_dir=self.config.pretrained_model_dir, use_fast=False, local_files_only=True)
         with warnings.catch_warnings():
             tokenizer = set_llama3_pad_token(tokenizer)
         return tokenizer
