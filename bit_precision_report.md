@@ -296,5 +296,157 @@ Output: "The OCT image reveals a large drusenoid PED with a hyporeflective
 | `retinavlm_meta_init_inference.ipynb` | 방법 3 기반 전체 추론 파이프라인 노트북 신규 생성 |
 
 ---
-**보고서 업데이트일**: 2026-03-09
-**v1.3 작성자**: Claude Code
+
+## 6. Override Load 방식 (방법 2) - 가장 난해했던 디버그 (v1.4)
+
+`load_method2_override_load.py`를 통해 검증된 방법.
+**이 파일만 수정 가능**한 제약 조건에서, HF 체크포인트를 직접 로드하여 추론까지 성공한 과정.
+
+### 6.1 문제의 본질: 왜 디버그가 힘들었나
+
+이 방법은 **5단계에 걸친 연쇄 문제**가 있었고, 각 단계를 해결해도 다음 문제가 드러나는 구조였다.
+특히 마지막 문제(int8 역양자화 품질 저하)는 **가중치 통계가 정상으로 보여도 추론이 실패**하는, 가장 디버그하기 어려운 유형이었다.
+
+### 6.2 문제 1: HF `from_pretrained` 내부 meta device 충돌
+
+**증상:**
+```
+RuntimeError: You are using `from_pretrained` with a meta device context manager.
+This is an anti-pattern as `from_pretrained` wants to load existing weights.
+```
+
+**원인:**
+`_load_pretrained_model` 오버라이드 방식으로 `RetinaVLMWithDequant.from_pretrained()`을 호출하면,
+HF 내부에서 meta device context를 설정. 이 안에서 Llama3의 `from_pretrained`이 중첩 호출되어 충돌.
+
+**해결:**
+`from_pretrained` 자체를 포기. 모델을 `MiniGPT4Module(config)`로 직접 생성하고, 체크포인트를 수동 로드.
+
+### 6.3 문제 2: 3중 키 리매핑 (가장 복잡)
+
+**증상:** 체크포인트 611개 키 vs 모델 1220개 키, 직접 매칭 0개
+
+**원인:** MiniGPT4 내부의 다중 alias 구조:
+
+```
+체크포인트 키                              모델 키 (2개씩 존재)
+─────────────────────────────────────────  ──────────────────────────────────
+model.llm.model.model.layers.0.q_proj.w   llama_model.model.layers.0.q_proj.w
+                                          llm.model.model.layers.0.q_proj.w
+
+model.visual_encoder.model.conv1.weight   visual_encoder.model.conv1.weight
+                                          visual_encoder.feature_tokens_model.0.weight
+```
+
+**필요했던 리매핑 4단계:**
+1. `"model."` prefix 제거
+2. `llm.model.model.` → `llama_model.model.` 변환
+3. 양방향 alias 복제 (llama_model ↔ llm.model)
+4. ResNet named children → Sequential 인덱스 (`conv1`→`0`, `bn1`→`1`, `layer1`→`4`, ...)
+
+### 6.4 문제 3: `feature_tokens_model`이 별도 모듈
+
+**증상:** 1220/1220 키 매칭 성공, Visual Encoder 0 all-zero → 정상처럼 보이나 추론 garbage
+
+**원인:**
+```python
+# PretrainedResNet.__init__()
+self.model = encoder.eval()
+self.feature_tokens_model = nn.Sequential(*list(self.model.children())[:-1])
+```
+
+`feature_tokens_model`은 `model`의 children으로 구성된 **별도 nn.Sequential**.
+`state_dict()`에서 별도 키로 등록됨. `model.*`로 로드해도 `feature_tokens_model.*`은 빈 상태.
+
+**해결:** ResNet children 이름→인덱스 매핑 추가:
+```python
+resnet_name_to_idx = {
+    "conv1": "0", "bn1": "1", "relu": "2", "maxpool": "3",
+    "layer1": "4", "layer2": "5", "layer3": "6", "layer4": "7",
+}
+# visual_encoder.model.conv1.weight → visual_encoder.feature_tokens_model.0.weight
+```
+
+### 6.5 문제 4: weight_format=0 오해 (오판)
+
+**증상:** 역양자화 결과와 bitsandbytes 내장 함수 결과가 동일한데도 추론 garbage
+
+**오판:** `weight_format=0`이 col_turing GPU 레이아웃이라 undo 필요하다고 추정
+
+**실제:**
+```python
+LINEAR_8BIT_WEIGHTS_FORMAT_MAPPING = {
+    "row": 0,        # ← weight_format=0 은 표준 row-major!
+    "col32": 1,
+    "col_turing": 2,
+    "col_ampere": 3
+}
+```
+→ 레이아웃 변환 불필요, 역양자화 자체는 정확했음
+
+### 6.6 문제 5: Int8 역양자화 LLM 가중치의 품질 저하 (핵심)
+
+**이것이 가장 디버그하기 어려웠던 이유:**
+- 모든 키 매칭 완료 (1220/1220)
+- 가중치 통계 정상 (mean≈0, std≈0.02)
+- 역양자화 수학적으로 정확 (bitsandbytes 결과와 diff=0)
+- **그런데 추론 결과가 garbage**
+
+**핵심 발견 - 전/후 비교 실험:**
+```
+[체크포인트 로드 전] "The capital of France is"
+→ "Paris, which is located in the north-central part of the country."  ✅
+
+[체크포인트 로드 후] "The capital of France is"
+→ "the most beautiful city in the world, and the city is the most beautiful..."  ❌
+
+q_proj weight diff (before vs after): max=0.718, mean=0.006
+```
+
+**원인:**
+- RetinaVLM 학습 시 **LLM은 frozen** (가중치 변경 없음)
+- 체크포인트의 LLM 가중치 = 원본 Llama3의 int8 양자화 → 역양자화 버전
+- 개별 가중치 오차는 작지만, 32개 transformer 레이어를 거치며 **오차 증폭**
+- 역양자화 fp16 << 원본 fp16 품질
+
+### 6.7 최종 해결 전략
+
+```
+Step 1: Llama3-8B-Instruct 사전학습 가중치로 모델 생성 (initialize=True)
+        → 원본 fp16 LLM 가중치 확보
+
+Step 2: HF 체크포인트 다운로드 + int8→fp16 역양자화
+
+Step 3: LLM 가중치(582개)는 제외하고, visual_encoder + llama_proj(638개)만 로드
+        → 원본 LLM 가중치 유지
+```
+
+```python
+# LLM frozen이므로 체크포인트의 역양자화 LLM 가중치 대신 원본 유지
+llm_prefixes = ("llm.", "llama_model.")
+filtered_dict = {k: v for k, v in remapped_dict.items()
+                 if not any(k.startswith(p) for p in llm_prefixes)}
+```
+
+### 6.8 최종 결과
+
+| 항목 | 값 |
+|------|-----|
+| 키 리매핑 후 매칭 | 1220/1220 |
+| 실제 로드 (LLM 제외) | 638 (visual_encoder + llama_proj) |
+| Visual Encoder all-zero | 0/159 |
+| llama_proj 체크포인트 일치 | max diff = 0.000000 (완벽 일치) |
+| LLM 단독 테스트 | "Paris, which is located in the north-central..." ✅ |
+| OCT 추론 | "The retinal OCT image shows no significant abnormalities or biomarkers." ✅ |
+
+### 6.9 교훈
+
+1. **가중치 통계(mean/std)가 정상이어도 추론이 실패할 수 있다** — 개별 오차가 작아도 deep network에서 누적됨
+2. **Frozen 레이어의 역양자화는 불필요하고 유해하다** — 원본 fp16 >> 역양자화 fp16
+3. **전/후 비교 테스트가 가장 효과적인 디버그** — 체크포인트 로드 전후 동일 입력으로 출력 비교
+4. **nn.Module alias와 nn.Sequential 래핑은 state_dict 키를 분리** — 같은 텐서를 공유해도 별도 키로 등록됨
+5. **weight_format 숫자의 의미를 소스코드에서 직접 확인** — 추측하지 말 것
+
+---
+**보고서 업데이트일**: 2026-03-10
+**v1.4 작성자**: Claude Code
