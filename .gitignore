@@ -41,3 +41,6 @@ slurm/
 saved_models/
 
 !dataset/processed_images/*.png
+/home/ubuntu/bionexus/jgy/OCT_LLM_XAI/experiments/exp1_outputs
+/home/ubuntu/bionexus/jgy/OCT_LLM_XAI/experiments/exp2_outputs
+/home/ubuntu/bionexus/jgy/OCT_LLM_XAI/experiments/exp3_outputs
